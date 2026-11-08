@@ -1,6 +1,8 @@
-import random
+from rede_neural import carregar_rede, escolher_acao
 
-ACOES = ["cima", "baixo", "esquerda", "direita", "bomba", "parado"]
+# Carrega os pesos treinados (pesos.npy) uma única vez ao importar o módulo
+_REDE = carregar_rede()
+
 
 def decidir_acao(player, mapa, jogadores, bombas, tempo_restante, pontos, hud_info, self_state):
-    return random.choice(ACOES)
+    return escolher_acao(_REDE, player, mapa, jogadores, bombas, tempo_restante)

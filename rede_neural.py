@@ -71,7 +71,15 @@ class Rede:
         return h @ self.W2 + self.b2
 
     def salvar(self, caminho=CAMINHO_PESOS):
-        np.save(caminho, self.vetor)
+        tmp = caminho + ".tmp.npy"
+        np.save(tmp, self.vetor)
+        for _ in range(10):
+            try:
+                os.replace(tmp, caminho)
+                return
+            except OSError:
+                time.sleep(0.2)
+                print("[AVISO] não consegui salvar pesos.npy desta vez; tentando na proxima geração")
 
 
 def carregar_rede(caminho=CAMINHO_PESOS):
@@ -150,19 +158,21 @@ def extrair_entradas(player, jogadores, tempo_restante, G):
         player.max_bombas / MAX_BOMBAS,
         (player.bomba_nivel - 1) / 3.0,
         len(player.bombas) / max(1, player.max_bombas),
-        tempo_restante / TEMPO_PARTIDA,
+        0.0,
         (alvo.grid_x - px) / COLS if alvo else 0.0,
         (alvo.grid_y - py) / ROWS if alvo else 0.0,
     ], dtype=np.float32)
     return np.concatenate([janela.ravel(), outros_ch.ravel(), esc])
 
 
-def escolher_acao(rede, player, mapa, jogadores, bombas, tempo_restante, G=None):
+def escolher_acao(rede, player, mapa, jogadores, bombas, tempo_restante, G=None, ruido=0.0):
     """Roda a rede e devolve a string da ação (já filtrando ações impossíveis)."""
     if G is None:
         G = mapas_globais(mapa, bombas)
     x = extrair_entradas(player, jogadores, tempo_restante, G)
     logits = rede.forward(x).copy()
+    if ruido > 0:
+        logits += np.random.randn(len(logits)) * ruido
 
     px, py = player.grid_x, player.grid_y
     for i, nome in enumerate(ACOES):

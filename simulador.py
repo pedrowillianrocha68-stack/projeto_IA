@@ -5,7 +5,8 @@ que é o tempo de movimento de um tile). Usado só para treinar a rede.
 import copy
 import random
 from rede_neural import (ROWS, COLS, TEMPO_EXPLOSAO, MAX_BOMBAS, TEMPO_PARTIDA,
-                         ACOES, DIRS, mapas_globais, escolher_acao)
+                         ACOES, DIRS, RAIO,  mapas_globais, escolher_acao)
+from rede_neural import _tiles_da_explosao 
 
 DT = 0.1
 TEMPO_FOGO = 0.5
@@ -15,6 +16,13 @@ PONTOS_POWERUP_DESTRUIDO = -50
 PONTOS_MATAR = 1000
 PONTOS_VITORIA = 10000
 PROB_BOMBA, PROB_FOGO = 0.12, 0.10
+BONUS_BOMBA = 30
+TETO_BOMBAS = 20
+BONUS_VIVO = 0.0
+PENA_PERIGO = 0.5
+BONUS_BOMBA_PERTO = 30
+BONUS_ESCAPOU = 40
+PENA_SUICIDIO = 50
 
 MAPA_BASE = [
     [0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0],
@@ -69,6 +77,9 @@ class Jogo:
         self.bombas_postas = [0] * 4
         self.tempo_restante = tempo_partida
         self.fim = False
+        self.ticks_perigo = [0] * 4 
+        self.bombas_perto = [0] * 4
+        self.visitados = [set() for _ in range(4)]  # para contar quantos tiles cada jogador visitou
 
     # ------------------------------------------------------------------
     def _powerup(self):
@@ -86,6 +97,11 @@ class Jogo:
         if acao == "bomba":
             if len(p.bombas) < p.max_bombas and not self._bomba_em(p.grid_x, p.grid_y):
                 b = SimBomba(p.grid_x, p.grid_y, p.bomba_nivel, p)
+                from rede_neural import _tiles_da_explosao 
+                alvo_tiles = set(_tiles_da_explosao(self.mapa, b))
+                if any(o is not p and o.ativo and (o.grid_x, o.grid_y) in alvo_tiles
+                       for o in self.jogadores):
+                    self.bombasperto[p.idx] += 1
                 self.bombas.append(b)
                 p.bombas.append(b)
                 self.bombas_postas[p.idx] += 1
@@ -97,6 +113,9 @@ class Jogo:
         if 0 <= nx < COLS and 0 <= ny < ROWS and self.mapa[ny][nx] in (0, 3, 4) \
                 and not self._bomba_em(nx, ny):
             p.grid_x, p.grid_y = nx, ny
+            if (nx, ny) not in self.visitados[p.idx]:
+                self.visitados[p.idx].add((nx, ny))
+                self.ganho[p.idx] += 0           
             t = self.mapa[ny][nx]
             if t == 3:
                 p.max_bombas = min(MAX_BOMBAS, p.max_bombas + 1)
@@ -135,12 +154,14 @@ class Jogo:
             if not p.ativo:
                 continue
             self.vivo_ticks[p.idx] += 1
+            if G[4, p.grid_y + RAIO, p.grid_x + RAIO] > 0.5:
+                self.ticks_perigo[p.idx] += 1
             rede = self.redes[p.idx]
             if rede is None:
                 acao = self.rng.choice(ACOES)
             else:
                 acao = escolher_acao(rede, p, self.mapa, self.jogadores, self.bombas,
-                                     self.tempo_restante, G)
+                                     self.tempo_restante, G, ruido=0.03)
             self._executar(p, acao)
 
         for b in self.bombas[:]:
@@ -160,6 +181,8 @@ class Jogo:
                         self.mapa[fy][fx] = 0
                         self.pontos[b.dono.idx] += PONTOS_POWERUP_DESTRUIDO
                         self.ganho[b.dono.idx] += PONTOS_POWERUP_DESTRUIDO
+                        if b.dono.ativo:
+                            self.ganho[b.dono.idx] += BONUS_ESCAPOU
                 self.bombas.remove(b)
                 if b in b.dono.bombas:
                     b.dono.bombas.remove(b)
@@ -172,7 +195,7 @@ class Jogo:
                         if b.dono is p:
                             self.suicidou[p.idx] = True
                             self.pontos[p.idx] = max(0, self.pontos[p.idx] - PONTOS_MATAR)
-                            self.ganho[p.idx] -= PONTOS_MATAR
+                            self.ganho[p.idx] -= PENA_SUICIDIO
                         else:
                             self.pontos[b.dono.idx] += PONTOS_MATAR
                             self.ganho[b.dono.idx] += PONTOS_MATAR
@@ -196,5 +219,9 @@ class Jogo:
         incentivo por colocar bombas + mínimo bônus por sobreviver.
         Sem bônus de vitória: ele premiava ficar parado esperando os outros morrerem.
         """
-        return [self.ganho[i] + 5 * min(self.bombas_postas[i], 20) + 0.05 * self.vivo_ticks[i]
+        return [self.ganho[i] 
+                + BONUS_BOMBA * min(self.bombas_postas[i], TETO_BOMBAS) 
+                + BONUS_VIVO * self.vivo_ticks[i]
+                - PENA_PERIGO * self.ticks_perigo[i]
+                + BONUS_BOMBA_PERTO + self.bombas_perto[i]
                 for i in range(4)]

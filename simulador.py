@@ -10,8 +10,8 @@ from rede_neural import _tiles_da_explosao
 
 DT = 0.1
 TEMPO_FOGO = 0.5
-PONTOS_BLOCO = 100
-PONTOS_POWERUP_COLETADO = 200
+PONTOS_BLOCO = 200
+PONTOS_POWERUP_COLETADO = 400
 PONTOS_POWERUP_DESTRUIDO = -50
 PONTOS_MATAR = 1000
 PONTOS_VITORIA = 10000
@@ -21,8 +21,11 @@ TETO_BOMBAS = 20
 BONUS_VIVO = 0.0
 PENA_PERIGO = 0.5
 BONUS_BOMBA_PERTO = 30
-BONUS_ESCAPOU = 40
-PENA_SUICIDIO = 50
+BONUS_ESCAPOU = 100
+PENA_SUICIDIO = 500
+BONUS_COMBO = 30
+BONUS_EXPLORAR = 1
+PENA_OCIOSO = 0.3
 
 MAPA_BASE = [
     [0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0],
@@ -79,8 +82,8 @@ class Jogo:
         self.fim = False
         self.ticks_perigo = [0] * 4 
         self.bombas_perto = [0] * 4
+        self.ticks_ocioso = [0] * 4
         self.visitados = [set() for _ in range(4)]  # para contar quantos tiles cada jogador visitou
-
     # ------------------------------------------------------------------
     def _powerup(self):
         r = self.rng.random()
@@ -101,7 +104,7 @@ class Jogo:
                 alvo_tiles = set(_tiles_da_explosao(self.mapa, b))
                 if any(o is not p and o.ativo and (o.grid_x, o.grid_y) in alvo_tiles
                        for o in self.jogadores):
-                    self.bombasperto[p.idx] += 1
+                    self.bombas_perto[p.idx] += 1
                 self.bombas.append(b)
                 p.bombas.append(b)
                 self.bombas_postas[p.idx] += 1
@@ -115,7 +118,7 @@ class Jogo:
             p.grid_x, p.grid_y = nx, ny
             if (nx, ny) not in self.visitados[p.idx]:
                 self.visitados[p.idx].add((nx, ny))
-                self.ganho[p.idx] += 0           
+                self.ganho[p.idx] += BONUS_EXPLORAR          
             t = self.mapa[ny][nx]
             if t == 3:
                 p.max_bombas = min(MAX_BOMBAS, p.max_bombas + 1)
@@ -154,6 +157,8 @@ class Jogo:
             if not p.ativo:
                 continue
             self.vivo_ticks[p.idx] += 1
+            if not p.bombas:
+                self.ticks_ocioso[p.idx] += 1
             if G[4, p.grid_y + RAIO, p.grid_x + RAIO] > 0.5:
                 self.ticks_perigo[p.idx] += 1
             rede = self.redes[p.idx]
@@ -161,7 +166,7 @@ class Jogo:
                 acao = self.rng.choice(ACOES)
             else:
                 acao = escolher_acao(rede, p, self.mapa, self.jogadores, self.bombas,
-                                     self.tempo_restante, G, ruido=0.03)
+                                     self.tempo_restante, G, ruido=0.15)
             self._executar(p, acao)
 
         for b in self.bombas[:]:
@@ -172,16 +177,20 @@ class Jogo:
             else:
                 b.tempo_fogo = round(b.tempo_fogo - DT, 6)
             if b.explodida and b.tempo_fogo <= 0:
+                quebrados = 0
                 for fx, fy in b.fogo:
                     if self.mapa[fy][fx] == 1:
                         self.mapa[fy][fx] = self._powerup()
                         self.pontos[b.dono.idx] += PONTOS_BLOCO
                         self.ganho[b.dono.idx] += PONTOS_BLOCO
+                        quebrados += 1
                     elif self.mapa[fy][fx] in (3, 4):
                         self.mapa[fy][fx] = 0
                         self.pontos[b.dono.idx] += PONTOS_POWERUP_DESTRUIDO
                         self.ganho[b.dono.idx] += PONTOS_POWERUP_DESTRUIDO
-                        if b.dono.ativo:
+                if quebrados >= 2:
+                            self.ganho[b.dono.idx] += BONUS_COMBO * quebrados
+                if b.dono.ativo and quebrados >=1:
                             self.ganho[b.dono.idx] += BONUS_ESCAPOU
                 self.bombas.remove(b)
                 if b in b.dono.bombas:
@@ -223,5 +232,6 @@ class Jogo:
                 + BONUS_BOMBA * min(self.bombas_postas[i], TETO_BOMBAS) 
                 + BONUS_VIVO * self.vivo_ticks[i]
                 - PENA_PERIGO * self.ticks_perigo[i]
-                + BONUS_BOMBA_PERTO + self.bombas_perto[i]
+                - PENA_OCIOSO * self.ticks_ocioso[i]
+                + BONUS_BOMBA_PERTO * self.bombas_perto[i]
                 for i in range(4)]

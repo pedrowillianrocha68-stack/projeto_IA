@@ -10,12 +10,16 @@ detector de "cheat" do main.py.
 """
 import os
 import numpy as np
+import time
+
+from collections import deque
 
 # ---- Constantes iguais às do main.py ----
 ROWS, COLS = 11, 13
 TEMPO_EXPLOSAO = 4.0
 MAX_BOMBAS = 5
 TEMPO_PARTIDA = 180.0
+LIMITE_PERIGO = 0.5
 
 ACOES = ["cima", "baixo", "esquerda", "direita", "bomba", "parado"]
 DIRS = {"cima": (0, -1), "baixo": (0, 1), "esquerda": (-1, 0), "direita": (1, 0)}
@@ -24,7 +28,7 @@ DIRS = {"cima": (0, -1), "baixo": (0, 1), "esquerda": (-1, 0), "direita": (1, 0)
 RAIO = 3                      # janela 7x7 ao redor do jogador
 JANELA = 2 * RAIO + 1
 CANAIS = 6                    # parede, bloco, powerup, bomba, perigo, outro jogador
-N_ESCALARES = 8
+N_ESCALARES = 9
 N_ENTRADAS = CANAIS * JANELA * JANELA + N_ESCALARES
 N_OCULTA = 32
 N_SAIDAS = len(ACOES)
@@ -79,7 +83,7 @@ class Rede:
                 return
             except OSError:
                 time.sleep(0.2)
-                print("[AVISO] não consegui salvar pesos.npy desta vez; tentando na proxima geração")
+        print("[AVISO] não consegui salvar pesos.npy desta vez; tentando na proxima geração")
 
 
 def carregar_rede(caminho=CAMINHO_PESOS):
@@ -152,37 +156,106 @@ def extrair_entradas(player, jogadores, tempo_restante, G):
             melhor, alvo = d, j
 
     ocupado = G[3, py + RAIO, px + RAIO] > 0
+    
+    bys, bxs = np.nonzero(G[1])
+    if len(bys):
+        d = np.abs(bys - (py + RAIO)) + np.abs(bxs - (px + RAIO))
+        k = int(np.argmin(d))
+        bdx = (bxs[k] - (px + RAIO)) / COLS
+        bdy = (bys[k] - (py + RAIO)) / ROWS
+    else:
+        bdx = bdy = 0.0
     esc = np.array([
         G[4, py + RAIO, px + RAIO],
         1.0 if (len(player.bombas) < player.max_bombas and not ocupado) else 0.0,
         player.max_bombas / MAX_BOMBAS,
         (player.bomba_nivel - 1) / 3.0,
         len(player.bombas) / max(1, player.max_bombas),
-        0.0,
+        bdx,
         (alvo.grid_x - px) / COLS if alvo else 0.0,
-        (alvo.grid_y - py) / ROWS if alvo else 0.0,
+        (alvo.grid_y - py) / ROWS if alvo else 0.0, 
+        bdy,
     ], dtype=np.float32)
     return np.concatenate([janela.ravel(), outros_ch.ravel(), esc])
 
+def _caminho_de_fuga(mapa, G, px, py):
+    """BFS até o tile seguro mais proximo (G[4]==0). Devolve a 1a direção ou none."""
+    fila = deque([(px,py,None)])
+    visto = {(px,py)}
+    while fila:
+        x, y, primeiro = fila.popleft()
+        if (x,y) != (px,py) and G[4, y + RAIO, x + RAIO] == 0:
+            return primeiro
+        for nome, (dx, dy) in DIRS.items():
+            nx, ny = x + dx, y + dy
+            if (0 <= nx < COLS and 0 <= ny < ROWS and (nx, ny)not in visto
+                  and mapa [ny][nx] in (0, 3, 4)
+                  and G[3, ny + RAIO, nx + RAIO] == 0
+                  and G[4, ny + RAIO, nx + RAIO] < 1.0):
+                visto.add((nx, ny))
+                fila.append((nx, ny, primeiro or nome))
+    return None
+
+def _tem_fuga(mapa, G, px, py, nivel):
+    """depois de plantar aqui, existe caminho até um tile fora de todas as zonas de explosão?"""
+    class _B:
+        pass
+    b = _B()
+    b.x, b.y, b.nivel = px, py, nivel
+    perigo = set(_tiles_da_explosao(mapa, b))
+    ys, xs = np.nonzero(G[4] > 0)
+    perigo |= {(int(x) - RAIO, int(y) - RAIO) for y,x in zip(ys, xs)}
+
+    fila = deque([(px, py, 0)])
+    visto = {(px, py)}
+    while fila:
+        x, y, d = fila.popleft()
+        if (x, y) not in perigo:
+            return True
+        if d >= 8:
+            continue
+        for dx, dy in DIRS.values():
+            nx, ny = x + dx, y + dy
+            if (0 <= nx < COLS and 0 <= ny < ROWS and (nx, ny) not in visto
+                    and mapa[ny][nx] in (0, 3, 4)
+                    and G[3, ny + RAIO, nx + RAIO] == 0
+                    and G[4, ny + RAIO, nx + RAIO] < 0.75):
+                visto.add((nx,ny))
+                fila.append((nx, ny, d + 1))
+    return False
+                
+
+                
 
 def escolher_acao(rede, player, mapa, jogadores, bombas, tempo_restante, G=None, ruido=0.0):
-    """Roda a rede e devolve a string da ação (já filtrando ações impossíveis)."""
     if G is None:
         G = mapas_globais(mapa, bombas)
+    px, py = player.grid_x, player.grid_y
+    em_perigo = G[4, py + RAIO, px + RAIO] > 0
+
+    # 1) EM PERIGO: a regra foge, a rede não decide
+    if em_perigo:
+        fuga = _caminho_de_fuga(mapa, G, px, py)
+        if fuga:
+            return fuga
+
     x = extrair_entradas(player, jogadores, tempo_restante, G)
     logits = rede.forward(x).copy()
     if ruido > 0:
         logits += np.random.randn(len(logits)) * ruido
 
-    px, py = player.grid_x, player.grid_y
     for i, nome in enumerate(ACOES):
         if nome in DIRS:
             dx, dy = DIRS[nome]
             nx, ny = px + dx, py + dy
             if not (0 <= nx < COLS and 0 <= ny < ROWS) or mapa[ny][nx] not in (0, 3, 4) \
-                    or G[3, ny + RAIO, nx + RAIO] > 0:
+                    or G[3, ny + RAIO, nx + RAIO] > 0 \
+                    or G[4, ny + RAIO, nx + RAIO] > 0:      # qualquer zona de perigo
                 logits[i] = -1e9
         elif nome == "bomba":
-            if len(player.bombas) >= player.max_bombas or G[3, py + RAIO, px + RAIO] > 0:
+            if (len(player.bombas) >= player.max_bombas
+                    or G[3, py + RAIO, px + RAIO] > 0
+                    or em_perigo
+                    or not _tem_fuga(mapa, G, px, py, player.bomba_nivel)):
                 logits[i] = -1e9
     return ACOES[int(np.argmax(logits))]

@@ -92,7 +92,8 @@ def main():
                 msg += f" | vs aleatórios: {pts:.0f} pts, {vit * 100:.0f}% vitórias"
             print(msg, flush=True)
 
-            sigma = max(0.03, 0.25 * (1 - g / a.geracoes))
+            sigma_ini = 0.08 if a.continuar else 0.25
+            sigma = max(0.03, sigma_ini * (1-g / a.geracoes))
             elite = [pop[i] for i in ordem[:n_elite]]
             nova = list(elite)
             while len(nova) < pop_n:
